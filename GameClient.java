@@ -1,0 +1,207 @@
+import java.awt.*;
+import java.awt.event.*;
+import java.io.*;
+import java.net.*;
+import javax.swing.*;
+
+public class GameClient extends JFrame implements KeyListener {
+    private Ball ball;
+    private Paddle p1, p2;
+    private AIPlayer ai;
+    private boolean vsAI;
+    private boolean vsHuman;
+    private int score1 = 0, score2 = 0, rounds = 0;
+    private int maxRounds;
+    private int aiDifficulty;
+
+    private PrintWriter out;
+    private BufferedReader in;
+    private boolean upPressed = false;
+    private boolean downPressed = false;
+
+    // Constructor mặc định
+    public GameClient(String host, boolean vsAI, int maxRounds, int aiDifficulty) {
+        this.vsAI = vsAI;
+        this.vsHuman = !vsAI;
+        this.maxRounds = maxRounds;
+        this.aiDifficulty = aiDifficulty;
+
+        ball = new Ball(Config.WIDTH/2, Config.HEIGHT/2);
+        p1 = new Paddle(50, Config.HEIGHT/2 - Config.PADDLE_HEIGHT/2);
+        p2 = new Paddle(Config.WIDTH-50-Config.PADDLE_WIDTH, Config.HEIGHT/2 - Config.PADDLE_HEIGHT/2);
+
+        if (vsAI) {
+            ai = new AIPlayer(p2, ball, aiDifficulty);
+        } else {
+            JOptionPane.showMessageDialog(this, "Đang tìm kiếm đối thủ, vui lòng chờ...");
+            connectServer(host);
+            listenServer();
+        }
+
+        setTitle("Pong Game");
+        setSize(Config.WIDTH, Config.HEIGHT);
+        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        addKeyListener(this);
+        setVisible(true);
+
+        addMouseMotionListener(new MouseMotionAdapter() {
+            @Override
+            public void mouseDragged(MouseEvent e) {
+                int mouseY = e.getY();
+                p1.y = Math.max(0, Math.min(Config.HEIGHT - Config.PADDLE_HEIGHT, mouseY - Config.PADDLE_HEIGHT/2));
+                if(vsHuman && out!=null) out.println("MOVE," + p1.y);
+            }
+        });
+
+        new Thread(this::gameLoop).start();
+    }
+
+    private void connectServer(String host) {
+        try {
+            int port = 5000;
+            File f = new File("server_port.txt");
+            if(f.exists()){
+                try (BufferedReader fr = new BufferedReader(new FileReader(f))) {
+                    port = Integer.parseInt(fr.readLine().trim());
+                }
+            }
+            Socket socket = new Socket(host, port);
+            out = new PrintWriter(socket.getOutputStream(), true);
+            in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+        } catch(Exception e){ e.printStackTrace();}
+    }
+
+    private void listenServer() {
+        new Thread(() -> {
+            try {
+                String line;
+                while ((line = in.readLine()) != null) {
+                    if(line.startsWith("STATE,")) {
+                        String[] arr = line.substring(6).split(",");
+                        ball.x = Integer.parseInt(arr[0]);
+                        ball.y = Integer.parseInt(arr[1]);
+                        p1.y = Integer.parseInt(arr[2]);
+                        p2.y = Integer.parseInt(arr[3]);
+                        score1 = Integer.parseInt(arr[4]);
+                        score2 = Integer.parseInt(arr[5]);
+                        rounds = Integer.parseInt(arr[6]);
+                    } else if(line.startsWith("END,")) {
+                        JOptionPane.showMessageDialog(this, line.substring(4));
+                        System.exit(0);
+                    }
+                    repaint();
+                }
+            } catch(Exception e){ e.printStackTrace();}
+        }).start();
+    }
+
+    private void gameLoop() {
+        while(true){
+            if(vsAI && ai!=null) ai.move();
+            else if(vsHuman && out!=null) {
+                if(upPressed) out.println("UP");
+                if(downPressed) out.println("DOWN");
+            }
+
+            if(vsAI) ball.move();
+            checkCollision();
+            repaint();
+
+            try{ Thread.sleep(15);}catch(Exception e){}
+        }
+    }
+
+    private void checkCollision() {
+        // Paddle 1
+        if (ball.x <= p1.x + Config.PADDLE_WIDTH &&
+            ball.x >= p1.x &&
+            ball.y + Config.BALL_SIZE >= p1.y && ball.y <= p1.y + Config.PADDLE_HEIGHT) {
+            ball.dx = Math.abs(ball.dx);
+        }
+        // Paddle 2
+        if (ball.x + Config.BALL_SIZE >= p2.x &&
+            ball.x + Config.BALL_SIZE <= p2.x + Config.PADDLE_WIDTH &&
+            ball.y + Config.BALL_SIZE >= p2.y && ball.y <= p2.y + Config.PADDLE_HEIGHT) {
+            ball.dx = -Math.abs(ball.dx);
+        }
+
+        // Bóng ra ngoài
+        if (vsAI) {
+            if (ball.x <= 0) { score2++; newRound(); }
+            if (ball.x >= Config.WIDTH) { score1++; newRound(); }
+        }
+    }
+
+    private void newRound() {
+        rounds++;
+        ball.x = Config.WIDTH/2;
+        ball.y = Config.HEIGHT/2;
+        ball.dx = Config.BASE_SPEED * (Math.random()>0.5?1:-1);
+        ball.dy = Config.BASE_SPEED * (Math.random()>0.5?1:-1);
+        if (rounds % Config.LEVEL_UP_INTERVAL == 0) ball.increaseSpeed();
+
+        if (score1 >= maxRounds/2+1) endGame("Player 1 thắng!");
+        if (score2 >= maxRounds/2+1) endGame(vsAI?"Máy thắng!":"Player 2 thắng!");
+    }
+
+    private void endGame(String msg) {
+        JOptionPane.showMessageDialog(this, msg);
+        System.exit(0);
+    }
+
+    public void paint(Graphics g){
+        Image buffer = createImage(getWidth(), getHeight());
+        Graphics g2 = buffer.getGraphics();
+        g2.setColor(Color.BLACK);
+        g2.fillRect(0,0,getWidth(),getHeight());
+        g2.setColor(Color.WHITE);
+        g2.fillRect(p1.x,p1.y,Config.PADDLE_WIDTH,Config.PADDLE_HEIGHT);
+        g2.fillRect(p2.x,p2.y,Config.PADDLE_WIDTH,Config.PADDLE_HEIGHT);
+        g2.fillOval(ball.x,ball.y,Config.BALL_SIZE,Config.BALL_SIZE);
+        g2.drawString("P1:"+score1+"  P2:"+score2+"  Vòng:"+rounds,350,50);
+        g.drawImage(buffer,0,0,this);
+    }
+
+    public void keyPressed(KeyEvent e){
+        if(e.getKeyCode()==KeyEvent.VK_UP) upPressed=true;
+        if(e.getKeyCode()==KeyEvent.VK_DOWN) downPressed=true;
+    }
+    public void keyReleased(KeyEvent e){
+        if(e.getKeyCode()==KeyEvent.VK_UP) upPressed=false;
+        if(e.getKeyCode()==KeyEvent.VK_DOWN) downPressed=false;
+    }
+    public void keyTyped(KeyEvent e){}
+
+    // ===== Main method =====
+    public static void main(String[] args){
+        String[] options = {"Chơi với máy","Chơi với người"};
+        int choice = JOptionPane.showOptionDialog(null,
+                "Chọn chế độ chơi",
+                "Pong Multiplayer",
+                JOptionPane.DEFAULT_OPTION,
+                JOptionPane.INFORMATION_MESSAGE,
+                null, options, options[0]);
+
+        boolean vsAI = (choice==0);
+        int maxRounds = 13;
+        String host = "localhost";
+        int aiDifficulty = 1;
+
+        if(vsAI){
+            String[] levels = {"Dễ","Trung bình","Khó"};
+            int level = JOptionPane.showOptionDialog(null,
+                    "Chọn độ khó AI",
+                    "Pong Multiplayer",
+                    JOptionPane.DEFAULT_OPTION,
+                    JOptionPane.INFORMATION_MESSAGE,
+                    null, levels, levels[1]);
+            switch(level){
+                case 0: aiDifficulty=1; break;
+                case 1: aiDifficulty=2; break;
+                case 2: aiDifficulty=3; break;
+            }
+        }
+
+        new GameClient(host, vsAI, maxRounds, aiDifficulty);
+    }
+}
